@@ -42,7 +42,7 @@ struct GraphQLResponseError: Error, LocalizedError {
   }
 }
 
-public class HTTPNetworkTransport: NetworkTransport {
+open class HTTPNetworkTransport: NetworkTransport {
   let url: URL
   let session: URLSession
   let serializationFormat = JSONSerializationFormat.self
@@ -52,7 +52,7 @@ public class HTTPNetworkTransport: NetworkTransport {
     self.session = URLSession(configuration: configuration)
   }
 
-  public func send<Operation: GraphQLOperation>(operation: Operation, completionHandler: @escaping (GraphQLResponse<Operation>?, Error?) -> Void) -> Cancellable {
+  open func send<Operation: GraphQLOperation>(operation: Operation, completionHandler: @escaping (GraphQLResponse<Operation>?, Error?) -> Void) -> Cancellable {
     var request = URLRequest(url: url)
     request.httpMethod = "POST"
 
@@ -61,37 +61,45 @@ public class HTTPNetworkTransport: NetworkTransport {
     let body: GraphQLMap = ["query": type(of: operation).queryDocument, "variables": operation.variables]
     request.httpBody = try! serializationFormat.serialize(value: body)
 
-    let task = session.dataTask(with: request) { (data: Data?, response: URLResponse?, error: Error?) in
+    return send(request: request, for: operation, completionHandler: completionHandler)
+  }
+  
+  open func send<Operation: GraphQLOperation>(request: URLRequest, for operation: Operation, completionHandler: @escaping (GraphQLResponse<Operation>?, Error?) -> Void) -> Cancellable {
+    let task = session.dataTask(with: request) { [weak self] (data: Data?, response: URLResponse?, error: Error?) in
       if error != nil {
         completionHandler(nil, error)
         return
       }
-
+      
       guard let httpResponse = response as? HTTPURLResponse else {
         fatalError("Response should be an HTTPURLResponse")
       }
-
+      
       if (!httpResponse.isSuccessful) {
         completionHandler(nil, GraphQLResponseError(body: data, response: httpResponse, kind: .errorResponse))
         return
       }
-
+      
       guard let data = data else {
         completionHandler(nil, GraphQLResponseError(body: nil, response: httpResponse, kind: .invalidResponse))
         return
       }
-
-      do {
-        guard let rootObject = try self.serializationFormat.deserialize(data: data) as? JSONObject else {
-          throw GraphQLResponseError(body: nil, response: httpResponse, kind: .invalidResponse)
-        }
-        let response = GraphQLResponse(operation: operation, rootObject: rootObject)
-        completionHandler(response, nil)
-      } catch {
-        completionHandler(nil, error)
-      }
+      
+      self?.handle(data: data, from: httpResponse, for: operation, completionHandler: completionHandler)
     }
     task.resume()
     return task
+  }
+  
+  open func handle<Operation: GraphQLOperation>(data: Data, from httpResponse: HTTPURLResponse, for operation: Operation, completionHandler: @escaping (GraphQLResponse<Operation>?, Error?) -> Void) {
+    do {
+      guard let rootObject = try self.serializationFormat.deserialize(data: data) as? JSONObject else {
+        throw GraphQLResponseError(body: nil, response: httpResponse, kind: .invalidResponse)
+      }
+      let response = GraphQLResponse(operation: operation, rootObject: rootObject)
+      completionHandler(response, nil)
+    } catch {
+      completionHandler(nil, error)
+    }
   }
 }
